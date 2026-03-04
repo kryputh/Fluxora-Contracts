@@ -2643,6 +2643,137 @@ fn test_withdraw_requires_recipient_authorization() {
     // can authorize this call, which is equivalent to checking env.invoker() == recipient
 }
 
+// ---------------------------------------------------------------------------
+// Tests — batch_withdraw (#220)
+// ---------------------------------------------------------------------------
+
+fn stream_ids_vec(env: &Env, ids: &[u64]) -> soroban_sdk::Vec<u64> {
+    let mut v = soroban_sdk::Vec::new(env);
+    for &id in ids {
+        v.push_back(id);
+    }
+    v
+}
+
+#[test]
+fn test_batch_withdraw_multiple_streams() {
+    let ctx = TestContext::setup();
+    ctx.env.ledger().set_timestamp(0);
+    let id0 = ctx.create_default_stream();
+    ctx.env.ledger().set_timestamp(0);
+    let id1 = ctx.client().create_stream(
+        &ctx.sender,
+        &ctx.recipient,
+        &2000_i128,
+        &2_i128,
+        &0u64,
+        &0u64,
+        &1000u64,
+    );
+    ctx.env.ledger().set_timestamp(0);
+    let id2 = ctx.client().create_stream(
+        &ctx.sender,
+        &ctx.recipient,
+        &500_i128,
+        &1_i128,
+        &0u64,
+        &0u64,
+        &500u64,
+    );
+
+    ctx.env.ledger().set_timestamp(400);
+    let stream_ids = stream_ids_vec(&ctx.env, &[id0, id1, id2]);
+    let results = ctx.client().batch_withdraw(&ctx.recipient, &stream_ids);
+
+    assert_eq!(results.len(), 3);
+    assert_eq!(results.get(0).unwrap().stream_id, id0);
+    assert_eq!(results.get(0).unwrap().amount, 400);
+    assert_eq!(results.get(1).unwrap().stream_id, id1);
+    assert_eq!(results.get(1).unwrap().amount, 800);
+    assert_eq!(results.get(2).unwrap().stream_id, id2);
+    assert_eq!(results.get(2).unwrap().amount, 400);
+
+    assert_eq!(ctx.token().balance(&ctx.recipient), 400 + 800 + 400);
+}
+
+#[test]
+fn test_batch_withdraw_mixed_state_some_zero() {
+    let ctx = TestContext::setup();
+    ctx.env.ledger().set_timestamp(0);
+    let id0 = ctx.create_default_stream();
+    ctx.env.ledger().set_timestamp(0);
+    let id1 = ctx.client().create_stream(
+        &ctx.sender,
+        &ctx.recipient,
+        &1000_i128,
+        &1_i128,
+        &0u64,
+        &0u64,
+        &1000u64,
+    );
+
+    // Complete id0 so it has 0 withdrawable
+    ctx.env.ledger().set_timestamp(1000);
+    ctx.client().withdraw(&id0);
+
+    ctx.env.ledger().set_timestamp(600);
+    let stream_ids = stream_ids_vec(&ctx.env, &[id0, id1]);
+    let results = ctx.client().batch_withdraw(&ctx.recipient, &stream_ids);
+
+    assert_eq!(results.len(), 2);
+    assert_eq!(results.get(0).unwrap().amount, 0);
+    assert_eq!(results.get(1).unwrap().amount, 600);
+    assert_eq!(ctx.token().balance(&ctx.recipient), 1000 + 600);
+}
+
+#[test]
+#[should_panic(expected = "stream recipient must match authorized recipient")]
+fn test_batch_withdraw_wrong_recipient_panics() {
+    let ctx = TestContext::setup();
+    let id0 = ctx.create_default_stream();
+    let other = Address::generate(&ctx.env);
+
+    ctx.env.ledger().set_timestamp(200);
+    let stream_ids = stream_ids_vec(&ctx.env, &[id0]);
+    let _ = ctx.client().batch_withdraw(&other, &stream_ids);
+}
+
+#[test]
+fn test_batch_withdraw_empty_ids_returns_empty() {
+    let ctx = TestContext::setup();
+    let stream_ids = stream_ids_vec(&ctx.env, &[]);
+    let results = ctx.client().batch_withdraw(&ctx.recipient, &stream_ids);
+    assert_eq!(results.len(), 0);
+}
+
+#[test]
+fn test_batch_withdraw_emits_events_per_stream() {
+    let ctx = TestContext::setup();
+    ctx.env.ledger().set_timestamp(0);
+    let id0 = ctx.create_default_stream();
+    ctx.env.ledger().set_timestamp(0);
+    let id1 = ctx.client().create_stream(
+        &ctx.sender,
+        &ctx.recipient,
+        &1000_i128,
+        &1_i128,
+        &0u64,
+        &0u64,
+        &1000u64,
+    );
+
+    ctx.env.ledger().set_timestamp(250);
+    let stream_ids = stream_ids_vec(&ctx.env, &[id0, id1]);
+    let _ = ctx.client().batch_withdraw(&ctx.recipient, &stream_ids);
+
+    // Each stream with withdrawable > 0 emits a "withdrew" event; we had 2 streams with 250 each
+    let events = ctx.env.events().all();
+    assert!(
+        events.len() >= 2,
+        "batch_withdraw must emit at least one event per withdrawal"
+    );
+}
+
 #[test]
 fn test_withdraw_recipient_success() {
     let ctx = TestContext::setup_strict();

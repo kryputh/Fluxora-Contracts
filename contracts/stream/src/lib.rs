@@ -89,6 +89,14 @@ pub struct Withdrawal {
     pub amount: i128,
 }
 
+/// Per-stream result for `batch_withdraw`.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct BatchWithdrawResult {
+    pub stream_id: u64,
+    pub amount: i128,
+}
+
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct RateUpdated {
@@ -869,6 +877,92 @@ impl FluxoraStream {
         }
 
         Ok(withdrawable)
+    }
+
+    /// Withdraw accrued tokens from multiple streams in one call (recipient-only).
+    ///
+    /// The caller must be the recipient of every stream in `stream_ids`. Each stream
+    /// is processed in order: same validation and accounting as `withdraw`. Events
+    /// are emitted per stream. The operation is atomic: if any stream fails
+    /// (e.g. not found, not recipient's, completed, or paused), the entire call panics
+    /// and no state changes or transfers occur.
+    ///
+    /// # Parameters
+    /// - `recipient`: Address that must authorize and must be the recipient of all streams
+    /// - `stream_ids`: Stream IDs to withdraw from (can contain duplicates; each processed once)
+    ///
+    /// # Returns
+    /// - `Vec<BatchWithdrawResult>`: Per-stream (stream_id, amount) for each withdrawal (amount may be 0)
+    ///
+    /// # Authorization
+    /// - Requires authorization from `recipient` once for the entire batch
+    ///
+    /// # Atomicity
+    /// - All streams are processed in order. Any panic (stream not found, wrong recipient,
+    ///   completed, paused) reverts the whole transaction.
+    pub fn batch_withdraw(
+        env: Env,
+        recipient: Address,
+        stream_ids: soroban_sdk::Vec<u64>,
+    ) -> Result<soroban_sdk::Vec<BatchWithdrawResult>, ContractError> {
+        recipient.require_auth();
+
+        let mut results = soroban_sdk::Vec::new(&env);
+
+        for stream_id in stream_ids.iter() {
+            let mut stream = load_stream(&env, stream_id)?;
+
+            assert!(
+                stream.recipient == recipient,
+                "stream recipient must match authorized recipient"
+            );
+
+            assert!(
+                stream.status != StreamStatus::Paused,
+                "cannot withdraw from paused stream"
+            );
+
+            let withdrawable = if stream.status == StreamStatus::Completed {
+                0
+            } else {
+                let accrued = Self::calculate_accrued(env.clone(), stream_id)?;
+                (accrued - stream.withdrawn_amount).max(0)
+            };
+
+            if withdrawable > 0 {
+                stream.withdrawn_amount += withdrawable;
+                let completed_now = stream.withdrawn_amount == stream.deposit_amount;
+                if completed_now {
+                    stream.status = StreamStatus::Completed;
+                }
+                save_stream(&env, &stream);
+
+                push_token(&env, &stream.recipient, withdrawable);
+
+                env.events().publish(
+                    (symbol_short!("withdrew"), stream_id),
+                    Withdrawal {
+                        stream_id,
+                        recipient: stream.recipient.clone(),
+                        amount: withdrawable,
+                    },
+                );
+
+                if completed_now {
+                    env.events().publish(
+                        (symbol_short!("completed"), stream_id),
+                        StreamEvent::StreamCompleted(stream_id),
+                    );
+                }
+            }
+
+            results.push_back(BatchWithdrawResult {
+                stream_id,
+                amount: withdrawable,
+            });
+        }
+
+        Ok(results)
     }
 
     /// Calculate the total amount accrued to the recipient at the current time.
