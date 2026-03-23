@@ -234,6 +234,26 @@ fn create_stream_rejects_self_stream_without_side_effects() {
 }
 
 #[test]
+fn get_withdrawable_matches_withdraw_active_integration() {
+    let ctx = TestContext::setup();
+    let stream_id = ctx.create_default_stream();
+
+    ctx.env.ledger().set_timestamp(600);
+    let expected = ctx.client().get_withdrawable(&stream_id);
+    let withdrawn = ctx.client().withdraw(&stream_id);
+
+    assert_eq!(
+        withdrawn, expected,
+        "withdraw should transfer exactly get_withdrawable amount"
+    );
+    assert_eq!(
+        ctx.client().get_withdrawable(&stream_id),
+        0,
+        "after withdraw, get_withdrawable must return 0 at same time"
+    );
+}
+
+#[test]
 fn withdraw_accrued_amount_updates_balances_and_state() {
     let ctx = TestContext::setup();
     let stream_id = ctx.create_default_stream();

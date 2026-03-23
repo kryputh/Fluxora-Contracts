@@ -1256,8 +1256,11 @@ impl FluxoraStream {
     /// - `stream_id`: Unique identifier of the stream
     ///
     /// # Returns
-    /// - `i128`: The amount currently available to withdraw. Returns `0` if the stream
-    ///   is `Paused`, `Completed`, or before the cliff time.
+    /// - `i128`: The amount currently available to withdraw.
+    ///   - Returns `0` if the stream is `Paused` or `Completed` (withdraw is blocked).
+    ///   - Returns `0` before the cliff time or when already fully withdrawn.
+    ///   - For `Active` or `Cancelled` streams, this equals the amount `withdraw()` would return
+    ///     at the current ledger time.
     ///
     /// # Errors
     /// - Returns `ContractError::StreamNotFound` if the stream does not exist.

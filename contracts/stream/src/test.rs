@@ -7773,6 +7773,71 @@ fn test_get_withdrawable_cancelled_stream_returns_accrued() {
     );
 }
 
+#[test]
+fn test_get_withdrawable_matches_withdraw_active() {
+    let ctx = TestContext::setup();
+    let stream_id = ctx.create_default_stream();
+
+    ctx.env.ledger().set_timestamp(600);
+    let expected = ctx.client().get_withdrawable(&stream_id);
+    let withdrawn = ctx.client().withdraw(&stream_id);
+
+    assert_eq!(
+        withdrawn, expected,
+        "withdraw should transfer exactly get_withdrawable amount"
+    );
+    assert_eq!(
+        ctx.client().get_withdrawable(&stream_id),
+        0,
+        "after withdraw, get_withdrawable must return 0 at same time"
+    );
+}
+
+#[test]
+fn test_get_withdrawable_matches_withdraw_cancelled_freeze() {
+    let ctx = TestContext::setup();
+    let stream_id = ctx.create_default_stream();
+
+    ctx.env.ledger().set_timestamp(400);
+    ctx.client().cancel_stream(&stream_id);
+
+    // Even if time advances, cancelled streams freeze accrual at cancelled_at.
+    ctx.env.ledger().set_timestamp(900);
+    let expected = ctx.client().get_withdrawable(&stream_id);
+    assert_eq!(expected, 400, "frozen accrual should remain at cancel time");
+
+    let withdrawn = ctx.client().withdraw(&stream_id);
+    assert_eq!(
+        withdrawn, expected,
+        "withdraw should transfer exactly frozen get_withdrawable amount"
+    );
+    assert_eq!(
+        ctx.client().get_withdrawable(&stream_id),
+        0,
+        "after withdraw on cancelled stream, get_withdrawable must return 0"
+    );
+}
+
+#[test]
+fn test_withdraw_before_cliff_matches_get_withdrawable_no_event() {
+    let ctx = TestContext::setup();
+    let stream_id = ctx.create_cliff_stream(); // cliff at t=500
+
+    ctx.env.ledger().set_timestamp(100);
+    let expected = ctx.client().get_withdrawable(&stream_id);
+    assert_eq!(expected, 0, "before cliff, get_withdrawable is 0");
+
+    let events_before = ctx.env.events().all().len();
+    let withdrawn = ctx.client().withdraw(&stream_id);
+    let events_after = ctx.env.events().all().len();
+
+    assert_eq!(withdrawn, 0, "withdraw returns 0 before cliff");
+    assert_eq!(
+        events_after, events_before,
+        "withdraw of 0 must not emit events"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Tests — get_claimable_at (#221)
 // ---------------------------------------------------------------------------
