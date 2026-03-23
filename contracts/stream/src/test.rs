@@ -572,7 +572,8 @@ fn test_create_stream_panics_when_contract_paused() {
     let ctx = TestContext::setup();
     ctx.env.ledger().set_timestamp(0);
     ctx.client().set_contract_paused(&true);
-    ctx.client().create_stream(&ctx.sender, &ctx.recipient, &1000, &1, &0, &0, &1000);
+    ctx.client()
+        .create_stream(&ctx.sender, &ctx.recipient, &1000, &1, &0, &0, &1000);
 }
 
 #[test]
@@ -585,7 +586,10 @@ fn test_create_stream_succeeds_after_unpause() {
         .client()
         .create_stream(&ctx.sender, &ctx.recipient, &1000, &1, &0, &0, &1000);
     assert_eq!(id, 0);
-    assert_eq!(ctx.client().get_stream_state(&id).status, StreamStatus::Active);
+    assert_eq!(
+        ctx.client().get_stream_state(&id).status,
+        StreamStatus::Active
+    );
 }
 
 #[test]
@@ -2748,7 +2752,10 @@ fn test_withdraw_to_requires_recipient_auth() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         ctx.client().withdraw_to(&stream_id, &destination)
     }));
-    assert!(result.is_err(), "withdraw_to without recipient auth should panic");
+    assert!(
+        result.is_err(),
+        "withdraw_to without recipient auth should panic"
+    );
 }
 
 // Tests — batch_withdraw (#220)
@@ -2824,7 +2831,7 @@ fn test_batch_withdraw_mixed_state_some_zero() {
     let mut stream_ids = soroban_sdk::Vec::new(&ctx.env);
     stream_ids.push_back(_id0);
     stream_ids.push_back(_id1);
-    
+
     let results = ctx.client().batch_withdraw(&ctx.recipient, &stream_ids);
     assert_eq!(results.len(), 2);
 }
@@ -3166,8 +3173,7 @@ fn test_top_up_stream_rejects_non_positive_amount() {
     let stream_id = ctx.create_default_stream();
 
     let result_zero = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        ctx.client()
-            .top_up_stream(&stream_id, &ctx.sender, &0_i128);
+        ctx.client().top_up_stream(&stream_id, &ctx.sender, &0_i128);
     }));
     assert!(result_zero.is_err());
 
@@ -7938,7 +7944,6 @@ fn test_extend_stream_end_time_rejects_when_deposit_insufficient() {
     ctx.client().extend_stream_end_time(&stream_id, &2_000u64);
 }
 
-
 // ---------------------------------------------------------------------------
 // Tests — Recipient Stream Index (Feature: recipient-stream-index)
 // ---------------------------------------------------------------------------
@@ -8151,7 +8156,7 @@ fn test_recipient_stream_index_sorted_after_operations() {
     ctx.env.ledger().set_timestamp(0);
 
     // Create streams with IDs 0, 1, 2
-    let id0 = ctx.client().create_stream(
+    let _id0 = ctx.client().create_stream(
         &ctx.sender,
         &ctx.recipient,
         &1000_i128,
@@ -8171,7 +8176,7 @@ fn test_recipient_stream_index_sorted_after_operations() {
         &2000u64,
     );
 
-    let id2 = ctx.client().create_stream(
+    let _id2 = ctx.client().create_stream(
         &ctx.sender,
         &ctx.recipient,
         &500_i128,
@@ -8262,29 +8267,49 @@ fn test_recipient_stream_index_lifecycle_consistency() {
     // Pause the stream
     ctx.client().pause_stream(&stream_id);
     let streams = ctx.client().get_recipient_streams(&ctx.recipient);
-    assert_eq!(streams.len(), 1, "stream should remain in index after pause");
+    assert_eq!(
+        streams.len(),
+        1,
+        "stream should remain in index after pause"
+    );
 
     // Resume the stream
     ctx.client().resume_stream(&stream_id);
     let streams = ctx.client().get_recipient_streams(&ctx.recipient);
-    assert_eq!(streams.len(), 1, "stream should remain in index after resume");
+    assert_eq!(
+        streams.len(),
+        1,
+        "stream should remain in index after resume"
+    );
 
     // Withdraw some tokens
     ctx.env.ledger().set_timestamp(500);
     ctx.client().withdraw(&stream_id);
     let streams = ctx.client().get_recipient_streams(&ctx.recipient);
-    assert_eq!(streams.len(), 1, "stream should remain in index after partial withdraw");
+    assert_eq!(
+        streams.len(),
+        1,
+        "stream should remain in index after partial withdraw"
+    );
 
     // Complete the stream
     ctx.env.ledger().set_timestamp(1000);
     ctx.client().withdraw(&stream_id);
     let streams = ctx.client().get_recipient_streams(&ctx.recipient);
-    assert_eq!(streams.len(), 1, "stream should remain in index when completed");
+    assert_eq!(
+        streams.len(),
+        1,
+        "stream should remain in index when completed"
+    );
 
     // Close the stream
     ctx.client().close_completed_stream(&stream_id);
     let streams = ctx.client().get_recipient_streams(&ctx.recipient);
-    assert_eq!(streams.len(), 0, "stream should be removed from index after close");
+    assert_eq!(
+        streams.len(),
+        0,
+        "stream should be removed from index after close"
+    );
 }
 
 /// Test that cancelled streams remain in the recipient's index.
@@ -8321,7 +8346,7 @@ fn test_recipient_stream_index_many_streams() {
     let num_streams = 50;
 
     // Create many streams
-    for i in 0..num_streams {
+    for _ in 0..num_streams {
         ctx.client().create_stream(
             &ctx.sender,
             &ctx.recipient,
@@ -8339,7 +8364,7 @@ fn test_recipient_stream_index_many_streams() {
 
     // Verify they're in sorted order
     for i in 0..num_streams {
-        assert_eq!(streams.get(i as u32).unwrap(), i as u64);
+        assert_eq!(streams.get(i as u32).unwrap(), i);
     }
 
     // Verify count is correct
@@ -8361,10 +8386,7 @@ fn test_recipient_stream_index_empty_for_new_recipient() {
     assert_eq!(streams.len(), 0);
 
     // Verify count is 0
-    assert_eq!(
-        ctx.client().get_recipient_stream_count(&new_recipient),
-        0
-    );
+    assert_eq!(ctx.client().get_recipient_stream_count(&new_recipient), 0);
 }
 
 /// Test that the index correctly handles streams with different senders.

@@ -174,10 +174,10 @@ pub struct CreateStreamParams {
 /// Namespace for all contract storage keys.
 #[contracttype]
 pub enum DataKey {
-    Config,                          // Instance storage for global settings (admin/token).
-    NextStreamId,                    // Instance storage for the auto-incrementing ID counter.
-    Stream(u64),                     // Persistent storage for individual stream data (O(1) lookup).
-    RecipientStreams(Address),       // Persistent storage for recipient stream index (sorted by stream_id).
+    Config,                    // Instance storage for global settings (admin/token).
+    NextStreamId,              // Instance storage for the auto-incrementing ID counter.
+    Stream(u64),               // Persistent storage for individual stream data (O(1) lookup).
+    RecipientStreams(Address), // Persistent storage for recipient stream index (sorted by stream_id).
     /// Emergency pause flag (bool). Appended to avoid shifting existing key discriminants.
     GlobalPaused,
 }
@@ -457,7 +457,7 @@ impl FluxoraStream {
         };
 
         save_stream(env, &stream);
-        
+
         // Add stream to recipient's index (maintains sorted order by stream_id)
         add_stream_to_recipient_index(env, &recipient, stream_id);
 
@@ -1401,7 +1401,9 @@ impl FluxoraStream {
     /// Set global pause; create_stream/create_streams panic_with_error(ContractPaused) while true.
     pub fn set_contract_paused(env: Env, paused: bool) {
         get_admin(&env).require_auth();
-        env.storage().instance().set(&DataKey::GlobalPaused, &paused);
+        env.storage()
+            .instance()
+            .set(&DataKey::GlobalPaused, &paused);
         bump_instance_ttl(&env);
     }
 
