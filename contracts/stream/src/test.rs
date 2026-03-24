@@ -7448,7 +7448,7 @@ fn test_create_streams_batch_emits_created_events_with_payloads() {
 
     let events = ctx.env.events().all();
     let mut created_payloads: std::vec::Vec<StreamCreated> = std::vec::Vec::new();
-    for i in events_before as u32..events.len() {
+    for i in events_before..events.len() {
         let event = events.get(i).unwrap();
         let topic0 = Symbol::from_val(&ctx.env, &event.1.get(0).unwrap());
         if topic0 == Symbol::new(&ctx.env, "created") {
@@ -7569,7 +7569,10 @@ fn test_create_streams_batch_wrong_auth_fails_without_side_effects() {
     assert!(result.is_err(), "non-sender auth must be rejected");
     assert_eq!(ctx.client().get_stream_count(), stream_count_before);
     assert_eq!(ctx.token().balance(&ctx.sender), sender_balance_before);
-    assert_eq!(ctx.token().balance(&ctx.contract_id), contract_balance_before);
+    assert_eq!(
+        ctx.token().balance(&ctx.contract_id),
+        contract_balance_before
+    );
     assert_eq!(ctx.env.events().all().len(), events_before);
 }
 

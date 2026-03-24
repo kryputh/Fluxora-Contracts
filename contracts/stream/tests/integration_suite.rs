@@ -304,7 +304,10 @@ fn create_streams_batch_invalid_entry_is_atomic_and_emits_no_events() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         ctx.client().create_streams(&ctx.sender, &streams);
     }));
-    assert!(result.is_err(), "batch with invalid entry must fail atomically");
+    assert!(
+        result.is_err(),
+        "batch with invalid entry must fail atomically"
+    );
     assert_eq!(ctx.client().get_stream_count(), stream_count_before);
     assert_eq!(ctx.token.balance(&ctx.sender), sender_balance_before);
     assert_eq!(ctx.token.balance(&ctx.contract_id), contract_balance_before);
