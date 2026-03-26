@@ -423,10 +423,12 @@ mod property_monotonicity {
 
     /// Dense time grid for a stream: samples before, at, and after every boundary.
     fn time_grid(start: u64, cliff: u64, end: u64) -> [u64; 12] {
-        let mid = start.saturating_add((end.saturating_sub(start)) / 2);
-        let q1 = start.saturating_add((end.saturating_sub(start)) / 4);
-        let q3 = start.saturating_add(3 * (end.saturating_sub(start)) / 4);
-        [
+        let span = end.saturating_sub(start);
+        let quarter = span / 4;
+        let mid = start.saturating_add(span / 2);
+        let q1 = start.saturating_add(quarter);
+        let q3 = start.saturating_add(quarter.saturating_mul(3));
+        let mut times = [
             0,
             start.saturating_sub(1),
             start,
@@ -439,7 +441,9 @@ mod property_monotonicity {
             end,
             end.saturating_add(1),
             end.saturating_add(1_000),
-        ]
+        ];
+        times.sort_unstable();
+        times
     }
 
     // -----------------------------------------------------------------------

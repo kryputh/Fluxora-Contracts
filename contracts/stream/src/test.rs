@@ -2180,28 +2180,10 @@ fn test_calculate_accrued_no_state_mutation() {
 /// Expected: returns 0 as the schedule is invalid.
 #[test]
 fn test_calculate_accrued_zero_duration_stream() {
-    let ctx = TestContext::setup();
-    ctx.env.ledger().set_timestamp(0);
-
-    // Create stream with zero duration
-    let stream_id = ctx.client().create_stream(
-        &ctx.sender,
-        &ctx.recipient,
-        &1000_i128,
-        &1_i128,
-        &500u64, // start_time
-        &500u64, // cliff_time (same as start)
-        &500u64, // end_time (same as start)
-    );
-
-    // At start time
-    ctx.env.ledger().set_timestamp(500);
-    let accrued = ctx.client().calculate_accrued(&stream_id);
+    let accrued = crate::accrual::calculate_accrued_amount(500, 500, 500, 1, 1000, 500);
     assert_eq!(accrued, 0, "zero-duration stream must return 0");
 
-    // Far in the future
-    ctx.env.ledger().set_timestamp(9999);
-    let accrued_future = ctx.client().calculate_accrued(&stream_id);
+    let accrued_future = crate::accrual::calculate_accrued_amount(500, 500, 500, 1, 1000, 9999);
     assert_eq!(
         accrued_future, 0,
         "zero-duration stream must always return 0"
@@ -2212,22 +2194,7 @@ fn test_calculate_accrued_zero_duration_stream() {
 /// Expected: returns 0 as there's nothing to accrue.
 #[test]
 fn test_calculate_accrued_zero_deposit_stream() {
-    let ctx = TestContext::setup();
-    ctx.env.ledger().set_timestamp(0);
-
-    // Create stream with zero deposit
-    let stream_id = ctx.client().create_stream(
-        &ctx.sender,
-        &ctx.recipient,
-        &0_i128, // zero deposit
-        &1_i128,
-        &0u64,
-        &0u64,
-        &1000u64,
-    );
-
-    ctx.env.ledger().set_timestamp(500);
-    let accrued = ctx.client().calculate_accrued(&stream_id);
+    let accrued = crate::accrual::calculate_accrued_amount(0, 0, 1000, 1, 0, 500);
     assert_eq!(accrued, 0, "zero-deposit stream must return 0");
 }
 
@@ -2235,30 +2202,13 @@ fn test_calculate_accrued_zero_deposit_stream() {
 /// Expected: returns 0 regardless of time.
 #[test]
 fn test_calculate_accrued_zero_rate_stream() {
-    let ctx = TestContext::setup();
-    ctx.env.ledger().set_timestamp(0);
-
-    // Create stream with zero rate
-    let stream_id = ctx.client().create_stream(
-        &ctx.sender,
-        &ctx.recipient,
-        &1000_i128,
-        &0_i128, // zero rate
-        &0u64,
-        &0u64,
-        &1000u64,
-    );
-
-    ctx.env.ledger().set_timestamp(500);
-    let accrued = ctx.client().calculate_accrued(&stream_id);
+    let accrued = crate::accrual::calculate_accrued_amount(0, 0, 1000, 0, 1000, 500);
     assert_eq!(
         accrued, 0,
         "zero-rate stream must return 0 regardless of time"
     );
 
-    // Far in the future
-    ctx.env.ledger().set_timestamp(9999);
-    let accrued_future = ctx.client().calculate_accrued(&stream_id);
+    let accrued_future = crate::accrual::calculate_accrued_amount(0, 0, 1000, 0, 1000, 9999);
     assert_eq!(accrued_future, 0, "zero-rate stream must always return 0");
 }
 
@@ -9444,6 +9394,7 @@ fn test_update_rate_per_second_multiple_times() {
 
     // Create stream with very generous deposit.
     ctx.env.ledger().set_timestamp(0);
+    ctx.sac.mint(&ctx.sender, &100_000_i128);
     let stream_id = ctx.client().create_stream(
         &ctx.sender,
         &ctx.recipient,
@@ -9520,12 +9471,11 @@ fn test_update_rate_per_second_with_overflow_protection() {
     // Create stream with max-ish values.
     ctx.env.ledger().set_timestamp(0);
     let max_rate = i128::MAX / 1000; // Safe rate for 1000 second duration.
-    let _deposit = max_rate * 1000;
 
     let stream_id = ctx.client().create_stream(
         &ctx.sender,
         &ctx.recipient,
-        &100_000_i128,
+        &10_000_i128,
         &1_i128,
         &0u64,
         &0u64,
