@@ -8,8 +8,8 @@ use soroban_sdk::{
 };
 
 use crate::{
-    ContractError, CreateStreamParams, FluxoraStream, FluxoraStreamClient, StreamCreated,
-    StreamEvent, StreamStatus, WithdrawalTo,
+    ContractError, CreateStreamParams, FluxoraStream, FluxoraStreamClient, GlobalResumed,
+    StreamCreated, StreamEvent, StreamStatus, WithdrawalTo,
 };
 
 // ---------------------------------------------------------------------------
@@ -14504,5 +14504,243 @@ fn test_create_streams_batch_deposit_overflow_is_atomic() {
         ctx.client().get_stream_count(),
         count_before,
         "stream count must not change on overflow failure"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests — global_resume
+// ---------------------------------------------------------------------------
+
+/// global_resume clears the emergency pause flag and allows normal operations.
+#[test]
+fn test_global_resume_clears_emergency_pause() {
+    let ctx = TestContext::setup();
+    ctx.env.ledger().set_timestamp(0);
+
+    // Activate emergency pause
+    ctx.client().set_global_emergency_paused(&true);
+    assert!(ctx.client().get_global_emergency_paused());
+
+    // Resume
+    ctx.client().global_resume();
+
+    // Flag must be cleared
+    assert!(!ctx.client().get_global_emergency_paused());
+}
+
+/// After global_resume, the emergency pause flag is cleared and normal operations work.
+#[test]
+fn test_global_resume_re_enables_create_stream() {
+    let ctx = TestContext::setup();
+    ctx.env.ledger().set_timestamp(0);
+
+    // Activate emergency pause and confirm flag is set
+    ctx.client().set_global_emergency_paused(&true);
+    assert!(ctx.client().get_global_emergency_paused());
+
+    // Resume clears the flag
+    ctx.client().global_resume();
+    assert!(!ctx.client().get_global_emergency_paused());
+
+    // create_stream works normally after resume
+    let id = ctx
+        .client()
+        .create_stream(&ctx.sender, &ctx.recipient, &1000, &1, &0, &0, &1000);
+    assert_eq!(
+        ctx.client().get_stream_state(&id).status,
+        StreamStatus::Active
+    );
+}
+
+/// global_resume emits a GlobalResumed event with the correct timestamp.
+#[test]
+fn test_global_resume_emits_event() {
+    let ctx = TestContext::setup();
+    ctx.env.ledger().set_timestamp(42);
+
+    ctx.client().set_global_emergency_paused(&true);
+    ctx.client().global_resume();
+
+    let events = ctx.env.events().all();
+    // Find the gl_resume event
+    let resume_event = events.iter().find(|e| {
+        let topic: soroban_sdk::Vec<soroban_sdk::Val> =
+            soroban_sdk::Vec::try_from_val(&ctx.env, &e.1)
+                .unwrap_or_else(|_| soroban_sdk::Vec::new(&ctx.env));
+        if topic.is_empty() {
+            return false;
+        }
+        let sym = Symbol::try_from_val(&ctx.env, &topic.get(0).unwrap());
+        sym.map(|s| s == Symbol::new(&ctx.env, "gl_resume"))
+            .unwrap_or(false)
+    });
+
+    assert!(resume_event.is_some(), "gl_resume event must be emitted");
+
+    let event_data = GlobalResumed::try_from_val(&ctx.env, &resume_event.unwrap().2).unwrap();
+    assert_eq!(event_data.resumed_at, 42);
+}
+
+/// global_resume requires admin authorization.
+#[test]
+fn test_global_resume_requires_admin_auth() {
+    let ctx = TestContext::setup_strict();
+    ctx.env.ledger().set_timestamp(0);
+
+    // Pause with admin auth
+    use soroban_sdk::{testutils::MockAuth, testutils::MockAuthInvoke, IntoVal};
+    ctx.env.mock_auths(&[MockAuth {
+        address: &ctx.admin,
+        invoke: &MockAuthInvoke {
+            contract: &ctx.contract_id,
+            fn_name: "set_global_emergency_paused",
+            args: (true,).into_val(&ctx.env),
+            sub_invokes: &[],
+        },
+    }]);
+    ctx.client().set_global_emergency_paused(&true);
+
+    // Resume with admin auth — must succeed
+    ctx.env.mock_auths(&[MockAuth {
+        address: &ctx.admin,
+        invoke: &MockAuthInvoke {
+            contract: &ctx.contract_id,
+            fn_name: "global_resume",
+            args: ().into_val(&ctx.env),
+            sub_invokes: &[],
+        },
+    }]);
+    ctx.client().global_resume();
+
+    assert!(!ctx.client().get_global_emergency_paused());
+}
+
+/// global_resume without admin auth panics.
+#[test]
+#[should_panic]
+fn test_global_resume_non_admin_panics() {
+    let ctx = TestContext::setup_strict();
+    ctx.env.ledger().set_timestamp(0);
+
+    use soroban_sdk::{testutils::MockAuth, testutils::MockAuthInvoke, IntoVal};
+    ctx.env.mock_auths(&[MockAuth {
+        address: &ctx.admin,
+        invoke: &MockAuthInvoke {
+            contract: &ctx.contract_id,
+            fn_name: "set_global_emergency_paused",
+            args: (true,).into_val(&ctx.env),
+            sub_invokes: &[],
+        },
+    }]);
+    ctx.client().set_global_emergency_paused(&true);
+
+    // Attempt resume with sender (non-admin) auth — must panic
+    ctx.env.mock_auths(&[MockAuth {
+        address: &ctx.sender,
+        invoke: &MockAuthInvoke {
+            contract: &ctx.contract_id,
+            fn_name: "global_resume",
+            args: ().into_val(&ctx.env),
+            sub_invokes: &[],
+        },
+    }]);
+    ctx.client().global_resume();
+}
+
+/// global_resume when contract is NOT paused returns InvalidState.
+#[test]
+fn test_global_resume_when_not_paused_returns_invalid_state() {
+    let ctx = TestContext::setup();
+    ctx.env.ledger().set_timestamp(0);
+
+    // Contract is not paused — resume must fail
+    let result = ctx.client().try_global_resume();
+    assert_eq!(result, Err(Ok(ContractError::InvalidState)));
+}
+
+/// Full lifecycle: pause → resume → operations work → re-pause → re-resume.
+#[test]
+fn test_global_resume_full_lifecycle_pause_resume_cycle() {
+    let ctx = TestContext::setup();
+    ctx.env.ledger().set_timestamp(0);
+
+    // Initially not paused
+    assert!(!ctx.client().get_global_emergency_paused());
+
+    // First pause
+    ctx.client().set_global_emergency_paused(&true);
+    assert!(ctx.client().get_global_emergency_paused());
+
+    // First resume
+    ctx.client().global_resume();
+    assert!(!ctx.client().get_global_emergency_paused());
+
+    // Operations work after first resume
+    let id = ctx
+        .client()
+        .create_stream(&ctx.sender, &ctx.recipient, &1000, &1, &0, &0, &1000);
+    assert_eq!(
+        ctx.client().get_stream_state(&id).status,
+        StreamStatus::Active
+    );
+
+    // Second pause
+    ctx.client().set_global_emergency_paused(&true);
+    assert!(ctx.client().get_global_emergency_paused());
+
+    // Second resume
+    ctx.client().global_resume();
+    assert!(!ctx.client().get_global_emergency_paused());
+}
+
+/// global_resume re-enables withdraw after emergency pause.
+#[test]
+fn test_global_resume_re_enables_withdraw() {
+    let ctx = TestContext::setup();
+    ctx.env.ledger().set_timestamp(0);
+
+    let id = ctx
+        .client()
+        .create_stream(&ctx.sender, &ctx.recipient, &1000, &1, &0, &0, &1000);
+
+    // Advance time and pause
+    ctx.env.ledger().set_timestamp(500);
+    ctx.client().set_global_emergency_paused(&true);
+
+    // Withdraw blocked
+    let blocked = ctx.client().try_withdraw(&id);
+    assert!(blocked.is_err());
+
+    // Resume and withdraw succeeds
+    ctx.client().global_resume();
+    let amount = ctx.client().withdraw(&id);
+    assert_eq!(amount, 500);
+}
+
+/// global_resume does not affect individual stream pause states.
+#[test]
+fn test_global_resume_does_not_affect_stream_pause_state() {
+    let ctx = TestContext::setup();
+    ctx.env.ledger().set_timestamp(0);
+
+    let id = ctx
+        .client()
+        .create_stream(&ctx.sender, &ctx.recipient, &1000, &1, &0, &0, &1000);
+
+    // Pause the individual stream
+    ctx.client().pause_stream(&id);
+    assert_eq!(
+        ctx.client().get_stream_state(&id).status,
+        StreamStatus::Paused
+    );
+
+    // Emergency pause then resume
+    ctx.client().set_global_emergency_paused(&true);
+    ctx.client().global_resume();
+
+    // Individual stream is still paused (global resume doesn't touch stream state)
+    assert_eq!(
+        ctx.client().get_stream_state(&id).status,
+        StreamStatus::Paused
     );
 }
