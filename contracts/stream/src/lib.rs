@@ -132,9 +132,13 @@ pub struct RateUpdated {
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct StreamEndShortened {
+    /// Stream whose schedule was shortened.
     pub stream_id: u64,
+    /// Previous `end_time` before this mutation.
     pub old_end_time: u64,
+    /// New `end_time` after this mutation.
     pub new_end_time: u64,
+    /// Tokens refunded to sender: `old_deposit_amount - new_deposit_amount`.
     pub refund_amount: i128,
 }
 
@@ -238,7 +242,7 @@ fn is_global_emergency_paused(env: &Env) -> bool {
     bump_instance_ttl(env);
     env.storage()
         .instance()
-        .get(&DataKey::GlobalEmergencyPaused)
+        .get(&DataKey::GlobalPaused)
         .unwrap_or(false)
 }
 
@@ -1685,10 +1689,11 @@ impl FluxoraStream {
 
         let now = env.ledger().timestamp();
 
-        // New end time must be in the future relative to the current ledger timestamp.
-        if new_end_time < now
+        // New end time must move strictly earlier and remain strictly in the future.
+        if new_end_time <= now
             || new_end_time <= stream.start_time
             || new_end_time < stream.cliff_time
+            || new_end_time >= stream.end_time
         {
             return Err(ContractError::InvalidParams);
         }
@@ -2223,12 +2228,13 @@ impl FluxoraStream {
     /// # Events
     /// - Publishes topic `gl_pause` with [`GlobalEmergencyPauseChanged`] data.
     pub fn set_global_emergency_paused(env: Env, paused: bool) {
-        let admin = get_admin(&env);
+        let admin = get_admin(&env)
+            .unwrap_or_else(|_| panic_with_error!(&env, ContractError::InvalidState));
         admin.require_auth();
 
         env.storage()
             .instance()
-            .set(&DataKey::GlobalEmergencyPaused, &paused);
+            .set(&DataKey::GlobalPaused, &paused);
         bump_instance_ttl(&env);
 
         env.events().publish(

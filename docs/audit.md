@@ -65,6 +65,9 @@ Auditors can use these as a checklist; the implementation is intended to preserv
 7. **Deposit sufficiency preserved on extension**  
    `extend_stream_end_time` re-validates `deposit_amount >= rate_per_second × (new_end_time − start_time)` before updating `end_time`. If the check fails, the call panics and no state changes occur. No token transfer happens on extension — the deposit already held in the contract must cover the longer duration. Use `top_up_stream` first if the current deposit is insufficient.
 
+8. **Shorten semantics are strictly monotone and refund-correct**  
+   `shorten_stream_end_time` only accepts `new_end_time` values that are strictly in the future and strictly earlier than the current `end_time`. On success, `deposit_amount` is recomputed as `rate_per_second × (new_end_time − start_time)` and sender refund is exactly `old_deposit_amount - new_deposit_amount`. Failed calls have no state, balance, or event side effects.
+
 7. **Time bounds**  
    `start_time < end_time` and `cliff_time ∈ [start_time, end_time]` are enforced in `create_stream`.
 

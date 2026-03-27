@@ -9,7 +9,7 @@ use soroban_sdk::{
 
 use crate::{
     ContractError, CreateStreamParams, FluxoraStream, FluxoraStreamClient, StreamCreated,
-    StreamEvent, StreamStatus, WithdrawalTo,
+    StreamEndShortened, StreamEvent, StreamStatus, WithdrawalTo,
 };
 
 // ---------------------------------------------------------------------------
@@ -9626,7 +9626,6 @@ fn test_shorten_stream_end_time_preserves_accrued_at_update_time() {
 }
 
 #[test]
-#[should_panic]
 fn test_shorten_stream_end_time_rejects_past_end_time() {
     let ctx = TestContext::setup();
     let stream_id = ctx.create_default_stream();
@@ -9634,8 +9633,169 @@ fn test_shorten_stream_end_time_rejects_past_end_time() {
     // Advance beyond the proposed new end time.
     ctx.env.ledger().set_timestamp(600);
 
-    // Attempting to shorten to a time in the past must panic.
-    ctx.client().shorten_stream_end_time(&stream_id, &500u64);
+    // Attempting to shorten to a time in the past must return InvalidParams.
+    let result = ctx
+        .client()
+        .try_shorten_stream_end_time(&stream_id, &500u64);
+    assert_eq!(result, Err(Ok(ContractError::InvalidParams)));
+}
+
+#[test]
+fn test_shorten_stream_end_time_rejects_equal_or_later_end_time() {
+    let ctx = TestContext::setup();
+    let stream_id = ctx.client().create_stream(
+        &ctx.sender,
+        &ctx.recipient,
+        &2_000_i128,
+        &1_i128,
+        &0u64,
+        &0u64,
+        &1_000u64,
+    );
+
+    // Equal old end_time is not a shorten.
+    let same = ctx
+        .client()
+        .try_shorten_stream_end_time(&stream_id, &1_000u64);
+    assert_eq!(same, Err(Ok(ContractError::InvalidParams)));
+
+    // Later end_time must also be rejected on the shorten path.
+    let later = ctx
+        .client()
+        .try_shorten_stream_end_time(&stream_id, &1_500u64);
+    assert_eq!(later, Err(Ok(ContractError::InvalidParams)));
+}
+
+#[test]
+fn test_shorten_stream_end_time_rejects_now_boundary() {
+    let ctx = TestContext::setup();
+    let stream_id = ctx.create_default_stream();
+
+    // Boundary at now is not strictly future, must be rejected.
+    ctx.env.ledger().set_timestamp(500);
+    let result = ctx
+        .client()
+        .try_shorten_stream_end_time(&stream_id, &500u64);
+    assert_eq!(result, Err(Ok(ContractError::InvalidParams)));
+}
+
+#[test]
+fn test_shorten_stream_end_time_rejects_new_end_before_cliff() {
+    let ctx = TestContext::setup();
+    let stream_id = ctx.create_cliff_stream(); // cliff = 500
+
+    let result = ctx
+        .client()
+        .try_shorten_stream_end_time(&stream_id, &400u64);
+    assert_eq!(result, Err(Ok(ContractError::InvalidParams)));
+}
+
+#[test]
+#[should_panic]
+fn test_shorten_stream_end_time_unauthorized_caller() {
+    let ctx = TestContext::setup_strict();
+
+    use soroban_sdk::{testutils::MockAuth, testutils::MockAuthInvoke, IntoVal};
+    ctx.env.mock_auths(&[MockAuth {
+        address: &ctx.sender,
+        invoke: &MockAuthInvoke {
+            contract: &ctx.contract_id,
+            fn_name: "create_stream",
+            args: (
+                ctx.sender.clone(),
+                ctx.recipient.clone(),
+                1000_i128,
+                1_i128,
+                0u64,
+                0u64,
+                1000u64,
+            )
+                .into_val(&ctx.env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let stream_id = ctx.client().create_stream(
+        &ctx.sender,
+        &ctx.recipient,
+        &1000_i128,
+        &1_i128,
+        &0u64,
+        &0u64,
+        &1000u64,
+    );
+
+    // No sender auth is provided for shorten; strict mode must trap.
+    ctx.client().shorten_stream_end_time(&stream_id, &700u64);
+}
+
+#[test]
+fn test_shorten_stream_end_time_emits_event_and_conserves_refund() {
+    let ctx = TestContext::setup();
+    let stream_id = ctx.create_default_stream();
+
+    let sender_before = ctx.token().balance(&ctx.sender);
+    let contract_before = ctx.token().balance(&ctx.contract_id);
+
+    ctx.client().shorten_stream_end_time(&stream_id, &700u64);
+
+    let sender_after = ctx.token().balance(&ctx.sender);
+    let contract_after = ctx.token().balance(&ctx.contract_id);
+    assert_eq!(sender_after - sender_before, 300);
+    assert_eq!(contract_before - contract_after, 300);
+
+    let events = ctx.env.events().all();
+    let last = events.last().unwrap();
+    let payload = StreamEndShortened::from_val(&ctx.env, &last.2);
+    assert_eq!(payload.stream_id, stream_id);
+    assert_eq!(payload.old_end_time, 1000);
+    assert_eq!(payload.new_end_time, 700);
+    assert_eq!(payload.refund_amount, 300);
+}
+
+#[test]
+fn test_shorten_stream_end_time_failed_call_has_no_side_effects() {
+    let ctx = TestContext::setup();
+    let stream_id = ctx.create_default_stream();
+
+    ctx.env.ledger().set_timestamp(600);
+    let sender_before = ctx.token().balance(&ctx.sender);
+    let contract_before = ctx.token().balance(&ctx.contract_id);
+    let state_before = ctx.client().get_stream_state(&stream_id);
+    let events_before = ctx.env.events().all().len();
+
+    let result = ctx
+        .client()
+        .try_shorten_stream_end_time(&stream_id, &500u64);
+    assert_eq!(result, Err(Ok(ContractError::InvalidParams)));
+
+    let state_after = ctx.client().get_stream_state(&stream_id);
+    assert_eq!(state_after.end_time, state_before.end_time);
+    assert_eq!(state_after.deposit_amount, state_before.deposit_amount);
+    assert_eq!(ctx.token().balance(&ctx.sender), sender_before);
+    assert_eq!(ctx.token().balance(&ctx.contract_id), contract_before);
+    assert_eq!(ctx.env.events().all().len(), events_before);
+}
+
+#[test]
+fn test_shorten_stream_end_time_rejects_completed_and_cancelled_states() {
+    let ctx = TestContext::setup();
+
+    let completed_id = ctx.create_default_stream();
+    ctx.env.ledger().set_timestamp(1000);
+    ctx.client().withdraw(&completed_id);
+    let completed_result = ctx
+        .client()
+        .try_shorten_stream_end_time(&completed_id, &900u64);
+    assert_eq!(completed_result, Err(Ok(ContractError::InvalidState)));
+
+    let cancelled_id = ctx.create_default_stream();
+    ctx.env.ledger().set_timestamp(300);
+    ctx.client().cancel_stream(&cancelled_id);
+    let cancelled_result = ctx
+        .client()
+        .try_shorten_stream_end_time(&cancelled_id, &800u64);
+    assert_eq!(cancelled_result, Err(Ok(ContractError::InvalidState)));
 }
 
 // ---------------------------------------------------------------------------
