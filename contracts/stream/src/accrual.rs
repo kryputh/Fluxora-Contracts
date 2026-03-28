@@ -21,14 +21,15 @@ pub fn calculate_accrued_amount(
         return 0;
     }
 
-    if start_time >= end_time || rate_per_second < 0 {
+    if rate_per_second < 0 {
         return 0;
     }
 
     let elapsed_now = current_time.min(end_time);
-    let elapsed_seconds = match elapsed_now.checked_sub(start_time) {
-        Some(elapsed) => elapsed as i128,
-        None => return 0,
+    let elapsed_seconds = if elapsed_now < start_time {
+        0
+    } else {
+        (elapsed_now - start_time) as i128
     };
 
     let accrued = match elapsed_seconds.checked_mul(rate_per_second) {
@@ -423,11 +424,11 @@ mod property_monotonicity {
 
     /// Dense time grid for a stream: samples before, at, and after every boundary.
     fn time_grid(start: u64, cliff: u64, end: u64) -> [u64; 12] {
-        let span = end.saturating_sub(start);
-        let mid = start.saturating_add(span / 2);
-        let q1 = start.saturating_add(span / 4);
-        let q3 = start.saturating_add(span / 2 + span / 4);
-        let mut arr = [
+        let duration = end.saturating_sub(start);
+        let mid = start.saturating_add(duration / 2);
+        let q1 = start.saturating_add(duration / 4);
+        let q3 = start.saturating_add((duration / 4).saturating_mul(3));
+        let mut times = [
             0,
             start.saturating_sub(1),
             start,
@@ -441,8 +442,8 @@ mod property_monotonicity {
             end.saturating_add(1),
             end.saturating_add(1_000),
         ];
-        arr.sort_unstable();
-        arr
+        times.sort();
+        times
     }
 
     // -----------------------------------------------------------------------

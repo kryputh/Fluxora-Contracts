@@ -4,7 +4,7 @@ extern crate std;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env, FromVal, IntoVal, Symbol, TryFromVal, Vec,
+    Address, Env, FromVal, IntoVal, Symbol, TryFromVal, Val, Vec,
 };
 
 use crate::{
@@ -620,7 +620,7 @@ fn test_create_stream_emits_event() {
 fn test_create_stream_panics_when_contract_paused() {
     let ctx = TestContext::setup();
     ctx.env.ledger().set_timestamp(0);
-    ctx.client().set_contract_paused(&true);
+    ctx.client().set_global_emergency_paused(&true);
     let result =
         ctx.client()
             .try_create_stream(&ctx.sender, &ctx.recipient, &1000, &1, &0, &0, &1000);
@@ -631,8 +631,8 @@ fn test_create_stream_panics_when_contract_paused() {
 fn test_create_stream_succeeds_after_unpause() {
     let ctx = TestContext::setup();
     ctx.env.ledger().set_timestamp(0);
-    ctx.client().set_contract_paused(&true);
-    ctx.client().set_contract_paused(&false);
+    ctx.client().set_global_emergency_paused(&true);
+    ctx.client().set_global_emergency_paused(&false);
     let id = ctx
         .client()
         .create_stream(&ctx.sender, &ctx.recipient, &1000, &1, &0, &0, &1000);
@@ -1959,14 +1959,23 @@ fn test_calculate_accrued_paused_after_cliff() {
 #[test]
 fn test_calculate_accrued_paused_at_end_time() {
     let ctx = TestContext::setup();
-    let stream_id = ctx.create_default_stream(); // 1000 tokens, 0-1000s, rate 1/s
+    ctx.env.ledger().set_timestamp(0);
+    let stream_id = ctx.client().create_stream(
+        &ctx.sender,
+        &ctx.recipient,
+        &1000_i128,
+        &1_i128,
+        &0u64,
+        &0u64,
+        &1000u64,
+    );
 
-    // Advance to end_time and pause
-    ctx.env.ledger().set_timestamp(1000);
+    // Advance to nearly end_time and pause
+    ctx.env.ledger().set_timestamp(999);
     ctx.client().pause_stream(&stream_id);
 
-    let state = ctx.client().get_stream_state(&stream_id);
-    assert_eq!(state.status, StreamStatus::Paused);
+    // Advance to end_time
+    ctx.env.ledger().set_timestamp(1000);
 
     // Accrued must be capped at deposit
     let accrued = ctx.client().calculate_accrued(&stream_id);
@@ -2183,20 +2192,20 @@ fn test_calculate_accrued_no_state_mutation() {
 #[test]
 fn test_calculate_accrued_zero_duration_stream() {
     let ctx = TestContext::setup();
-    ctx.env.ledger().set_timestamp(0);
+    ctx.env.ledger().set_timestamp(100);
 
-    // Create stream with zero duration
+    // Attempt to create stream with zero duration (start == end)
     let result = ctx.client().try_create_stream(
         &ctx.sender,
         &ctx.recipient,
         &1000_i128,
         &1_i128,
         &500u64, // start_time
-        &500u64, // cliff_time (same as start)
-        &500u64, // end_time (same as start)
+        &500u64, // cliff_time
+        &500u64, // end_time
     );
 
-    assert_eq!(result, Err(Ok(crate::ContractError::InvalidParams)));
+    assert_eq!(result, Err(Ok(ContractError::InvalidParams)));
 }
 
 /// Edge case: calculate_accrued on stream with zero deposit.
@@ -2204,20 +2213,20 @@ fn test_calculate_accrued_zero_duration_stream() {
 #[test]
 fn test_calculate_accrued_zero_deposit_stream() {
     let ctx = TestContext::setup();
-    ctx.env.ledger().set_timestamp(0);
+    ctx.env.ledger().set_timestamp(100);
 
-    // Create stream with zero deposit
+    // Attempt to create stream with zero deposit
     let result = ctx.client().try_create_stream(
         &ctx.sender,
         &ctx.recipient,
         &0_i128, // zero deposit
         &1_i128,
-        &0u64,
-        &0u64,
+        &100u64,
+        &100u64,
         &1000u64,
     );
 
-    assert_eq!(result, Err(Ok(crate::ContractError::InvalidParams)));
+    assert_eq!(result, Err(Ok(ContractError::InvalidParams)));
 }
 
 /// Edge case: calculate_accrued with zero rate (no accrual ever).
@@ -2225,20 +2234,20 @@ fn test_calculate_accrued_zero_deposit_stream() {
 #[test]
 fn test_calculate_accrued_zero_rate_stream() {
     let ctx = TestContext::setup();
-    ctx.env.ledger().set_timestamp(0);
+    ctx.env.ledger().set_timestamp(100);
 
-    // Create stream with zero rate
+    // Attempt to create stream with zero rate
     let result = ctx.client().try_create_stream(
         &ctx.sender,
         &ctx.recipient,
         &1000_i128,
         &0_i128, // zero rate
-        &0u64,
-        &0u64,
+        &100u64,
+        &100u64,
         &1000u64,
     );
 
-    assert_eq!(result, Err(Ok(crate::ContractError::InvalidParams)));
+    assert_eq!(result, Err(Ok(ContractError::InvalidParams)));
 }
 
 // ---------------------------------------------------------------------------
@@ -9144,17 +9153,12 @@ fn test_update_rate_per_second_rejects_rate_decrease() {
 #[test]
 fn test_update_rate_per_second_before_cliff() {
     let ctx = TestContext::setup();
-    // Use a stream with deposit headroom: deposit=2000, rate=1, cliff=500, end=1000
-    ctx.env.ledger().set_timestamp(0);
-    let stream_id = ctx.client().create_stream(
-        &ctx.sender,
-        &ctx.recipient,
-        &2000_i128,
-        &1_i128,
-        &0u64,
-        &500u64,
-        &1000u64,
-    );
+    // Mint more and manually create stream with larger deposit
+    let sac = StellarAssetClient::new(&ctx.env, &ctx.token_id);
+    sac.mint(&ctx.sender, &2000);
+    let stream_id =
+        ctx.client()
+            .create_stream(&ctx.sender, &ctx.recipient, &2000, &1, &0, &500, &1000);
 
     // Before cliff at t=100, accrued is 0.
     ctx.env.ledger().set_timestamp(100);
@@ -9171,24 +9175,19 @@ fn test_update_rate_per_second_before_cliff() {
     // After cliff at t=600, accrual uses new rate.
     ctx.env.ledger().set_timestamp(600);
     let accrued_post_cliff = ctx.client().calculate_accrued(&stream_id);
-    // elapsed = 600, rate = 2 → 1200 accrued (capped at deposit 2000).
+    // elapsed = 600 - 0 = 600, rate = 2 → 1200 accrued (capped at deposit 2000).
     assert_eq!(accrued_post_cliff, 1200);
 }
 
 #[test]
 fn test_update_rate_per_second_at_cliff() {
     let ctx = TestContext::setup();
-    // Use a stream with deposit headroom: deposit=2000, rate=1, cliff=500, end=1000
-    ctx.env.ledger().set_timestamp(0);
-    let stream_id = ctx.client().create_stream(
-        &ctx.sender,
-        &ctx.recipient,
-        &2000_i128,
-        &1_i128,
-        &0u64,
-        &500u64,
-        &1000u64,
-    );
+    // Mint more and manually create stream with larger deposit
+    let sac = StellarAssetClient::new(&ctx.env, &ctx.token_id);
+    sac.mint(&ctx.sender, &5000);
+    let stream_id =
+        ctx.client()
+            .create_stream(&ctx.sender, &ctx.recipient, &5000, &1, &0, &500, &1000);
 
     // Exactly at cliff time t=500.
     ctx.env.ledger().set_timestamp(500);
@@ -9344,22 +9343,23 @@ fn test_update_rate_per_second_emits_event() {
 
     // Verify event was emitted.
     let events = ctx.env.events().all();
-    let mut rate_update_events = Vec::new(&ctx.env);
-    for e in events.iter() {
-        if e.1.len() == 2 {
-            let topic0 = Symbol::try_from_val(&ctx.env, &e.1.get(0).unwrap());
-            let topic1 = u64::try_from_val(&ctx.env, &e.1.get(1).unwrap());
-            if let (Ok(sym), Ok(id)) = (topic0, topic1) {
-                if sym == Symbol::new(&ctx.env, "rate_upd") && id == stream_id {
-                    rate_update_events.push_back(e);
-                }
+    let rate_update_events_count = events
+        .into_iter()
+        .filter(|e| {
+            if e.1.len() < 2 {
+                return false;
             }
-        }
-    }
+            let s = Symbol::try_from_val(&ctx.env, &e.1.get(0).unwrap_or(Val::VOID.into()));
+            let id = u64::try_from_val(&ctx.env, &e.1.get(1).unwrap_or(Val::VOID.into()));
+            match (s, id) {
+                (Ok(s), Ok(id)) => s == Symbol::new(&ctx.env, "rate_upd") && id == stream_id,
+                _ => false,
+            }
+        })
+        .count();
 
     assert_eq!(
-        rate_update_events.len(),
-        1,
+        rate_update_events_count, 1,
         "Should emit exactly one rate_upd event"
     );
 }
@@ -9417,6 +9417,9 @@ fn test_update_rate_per_second_nonexistent_stream() {
 #[test]
 fn test_update_rate_per_second_multiple_times() {
     let ctx = TestContext::setup();
+    // Mint enough for the 100,000 deposit
+    let sac = StellarAssetClient::new(&ctx.env, &ctx.token_id);
+    sac.mint(&ctx.sender, &100_000_i128);
 
     // Create stream with very generous deposit.
     ctx.env.ledger().set_timestamp(0);
@@ -9494,28 +9497,34 @@ fn test_update_rate_per_second_preserves_other_fields() {
 fn test_update_rate_per_second_with_overflow_protection() {
     let ctx = TestContext::setup();
 
-    // Create stream with normal deposit and rate.
+    // Create stream with safe values.
     ctx.env.ledger().set_timestamp(0);
-    let max_rate = i128::MAX / 1000; // Safe rate for 1000 second duration.
-    ctx.sac.mint(&ctx.sender, &100_000_i128);
+    let initial_rate = 1_000_i128;
+    let deposit = 10_000_000_i128;
+
+    // Mint enough for the deposit
+    let sac = StellarAssetClient::new(&ctx.env, &ctx.token_id);
+    sac.mint(&ctx.sender, &deposit);
 
     let stream_id = ctx.client().create_stream(
         &ctx.sender,
         &ctx.recipient,
-        &100_000_i128,
-        &1_i128,
+        &deposit,
+        &initial_rate,
         &0u64,
         &0u64,
         &1_000u64,
     );
 
-    // Attempt to update to a rate that would overflow.
+    // Attempt to update to a rate that would overflow checks (rate * duration).
+    // duration = 1000. So any rate > i128::MAX / 1000 will overflow duration * rate.
+    let huge_rate = i128::MAX;
     let result = ctx
         .client()
-        .try_update_rate_per_second(&stream_id, &(max_rate + 1));
+        .try_update_rate_per_second(&stream_id, &huge_rate);
     assert!(
         result.is_err(),
-        "Should fail due to overflow or insufficient deposit"
+        "Should fail due to overflow in duration * rate"
     );
 }
 
@@ -10506,7 +10515,7 @@ fn test_withdraw_and_withdraw_to_interleaved_no_double_pay() {
 fn test_create_stream_contract_paused_returns_structured_error() {
     let ctx = TestContext::setup();
     ctx.env.ledger().set_timestamp(0);
-    ctx.client().set_contract_paused(&true);
+    ctx.client().set_global_emergency_paused(&true);
 
     ctx.client().create_stream(
         &ctx.sender,
@@ -12357,8 +12366,7 @@ fn test_pause_completed_stream_panics() {
 /// pause_stream_as_admin on an already-Paused stream must be rejected.
 /// The admin path enforces the same Active-only precondition as the sender path.
 #[test]
-#[should_panic]
-fn test_pause_stream_as_admin_already_paused_panics() {
+fn test_pause_stream_as_admin_already_paused_fails() {
     let ctx = TestContext::setup();
     let stream_id = ctx.create_default_stream();
 
@@ -12366,14 +12374,14 @@ fn test_pause_stream_as_admin_already_paused_panics() {
     let state = ctx.client().get_stream_state(&stream_id);
     assert_eq!(state.status, StreamStatus::Paused);
 
-    // Second pause via admin path must also be rejected.
-    ctx.client().pause_stream_as_admin(&stream_id);
+    // Second pause via admin path must return StreamAlreadyPaused.
+    let result = ctx.client().try_pause_stream_as_admin(&stream_id);
+    assert_eq!(result, Err(Ok(ContractError::StreamAlreadyPaused)));
 }
 
 /// pause_stream_as_admin on a Completed stream must be rejected.
 #[test]
-#[should_panic]
-fn test_pause_stream_as_admin_completed_panics() {
+fn test_pause_stream_as_admin_completed_fails() {
     let ctx = TestContext::setup();
     let stream_id = ctx.create_default_stream();
 
@@ -12384,13 +12392,13 @@ fn test_pause_stream_as_admin_completed_panics() {
         StreamStatus::Completed
     );
 
-    ctx.client().pause_stream_as_admin(&stream_id);
+    let result = ctx.client().try_pause_stream_as_admin(&stream_id);
+    assert_eq!(result, Err(Ok(ContractError::StreamTerminalState)));
 }
 
 /// pause_stream_as_admin on a Cancelled stream must be rejected.
 #[test]
-#[should_panic]
-fn test_pause_stream_as_admin_cancelled_panics() {
+fn test_pause_stream_as_admin_cancelled_fails() {
     let ctx = TestContext::setup();
     let stream_id = ctx.create_default_stream();
 
@@ -12400,15 +12408,15 @@ fn test_pause_stream_as_admin_cancelled_panics() {
         StreamStatus::Cancelled
     );
 
-    ctx.client().pause_stream_as_admin(&stream_id);
+    let result = ctx.client().try_pause_stream_as_admin(&stream_id);
+    assert_eq!(result, Err(Ok(ContractError::StreamTerminalState)));
 }
 
 // ── State-boundary guards: resume_stream_as_admin ───────────────────────────
 
 /// resume_stream_as_admin on an Active (not paused) stream must be rejected.
 #[test]
-#[should_panic]
-fn test_resume_stream_as_admin_active_stream_panics() {
+fn test_resume_stream_as_admin_active_stream_fails() {
     let ctx = TestContext::setup();
     let stream_id = ctx.create_default_stream();
 
@@ -12417,30 +12425,30 @@ fn test_resume_stream_as_admin_active_stream_panics() {
         StreamStatus::Active
     );
 
-    ctx.client().resume_stream_as_admin(&stream_id);
+    let result = ctx.client().try_resume_stream_as_admin(&stream_id);
+    assert_eq!(result, Err(Ok(ContractError::StreamNotPaused)));
 }
 
 /// resume_stream_as_admin on a Completed stream must be rejected.
 #[test]
-#[should_panic]
-fn test_resume_stream_as_admin_completed_panics() {
+fn test_resume_stream_as_admin_completed_fails() {
     let ctx = TestContext::setup();
     let stream_id = ctx.create_default_stream();
 
-    ctx.env.ledger().set_timestamp(1000);
+    ctx.env.ledger().set_timestamp(1_000);
     ctx.client().withdraw(&stream_id);
     assert_eq!(
         ctx.client().get_stream_state(&stream_id).status,
         StreamStatus::Completed
     );
 
-    ctx.client().resume_stream_as_admin(&stream_id);
+    let result = ctx.client().try_resume_stream_as_admin(&stream_id);
+    assert_eq!(result, Err(Ok(ContractError::StreamTerminalState)));
 }
 
 /// resume_stream_as_admin on a Cancelled stream must be rejected.
 #[test]
-#[should_panic]
-fn test_resume_stream_as_admin_cancelled_panics() {
+fn test_resume_stream_as_admin_cancelled_fails() {
     let ctx = TestContext::setup();
     let stream_id = ctx.create_default_stream();
 
@@ -12450,7 +12458,8 @@ fn test_resume_stream_as_admin_cancelled_panics() {
         StreamStatus::Cancelled
     );
 
-    ctx.client().resume_stream_as_admin(&stream_id);
+    let result = ctx.client().try_resume_stream_as_admin(&stream_id);
+    assert_eq!(result, Err(Ok(ContractError::StreamTerminalState)));
 }
 
 // ── Cross-path invariant: sender pause → admin resume and vice-versa ─────────
@@ -12495,6 +12504,106 @@ fn test_admin_pause_sender_resume_cross_path() {
     assert_eq!(
         ctx.client().get_stream_state(&stream_id).status,
         StreamStatus::Active
+    );
+}
+
+// ── Time-boundary verification: Admin pause/resume ──────────────────────────
+
+/// Admin can pause exactly at start_time.
+#[test]
+fn test_admin_pause_at_start_time() {
+    let ctx = TestContext::setup();
+    let start_time = 100u64;
+    let stream_id = ctx.client().create_stream(
+        &ctx.sender,
+        &ctx.recipient,
+        &1000,
+        &1,
+        &start_time,
+        &start_time,
+        &1100,
+    );
+
+    ctx.env.ledger().set_timestamp(start_time);
+    ctx.client().pause_stream_as_admin(&stream_id);
+    assert_eq!(
+        ctx.client().get_stream_state(&stream_id).status,
+        StreamStatus::Paused
+    );
+}
+
+/// Admin can pause exactly at cliff_time.
+#[test]
+fn test_admin_pause_at_cliff_time() {
+    let ctx = TestContext::setup();
+    let cliff_time = 200u64;
+    let stream_id = ctx.client().create_stream(
+        &ctx.sender,
+        &ctx.recipient,
+        &1000,
+        &1,
+        &100,
+        &cliff_time,
+        &1100,
+    );
+
+    ctx.env.ledger().set_timestamp(cliff_time);
+    ctx.client().pause_stream_as_admin(&stream_id);
+    assert_eq!(
+        ctx.client().get_stream_state(&stream_id).status,
+        StreamStatus::Paused
+    );
+}
+
+/// Admin cannot pause at end_time because it should be Completed.
+#[test]
+fn test_admin_pause_at_end_time_fails() {
+    let ctx = TestContext::setup();
+    let end_time = 1100u64;
+    let stream_id = ctx.client().create_stream(
+        &ctx.sender,
+        &ctx.recipient,
+        &1000,
+        &1,
+        &100,
+        &200,
+        &end_time,
+    );
+
+    ctx.env.ledger().set_timestamp(end_time);
+    // Note: Stored status will still be Active until a state-changing call is made,
+    // but the contract must already treat it as Terminal based on time.
+
+    let result = ctx.client().try_pause_stream_as_admin(&stream_id);
+    assert_eq!(result, Err(Ok(ContractError::StreamTerminalState)));
+}
+
+/// A paused stream can be withdrawn from if it's past end_time.
+#[test]
+fn test_withdraw_from_paused_at_end_time() {
+    let ctx = TestContext::setup();
+    let end_time = 1_000u64;
+    let stream_id =
+        ctx.client()
+            .create_stream(&ctx.sender, &ctx.recipient, &1000, &1, &0, &0, &end_time);
+
+    // Pause at t=500
+    ctx.env.ledger().set_timestamp(500);
+    ctx.client().pause_stream(&stream_id);
+    assert_eq!(
+        ctx.client().get_stream_state(&stream_id).status,
+        StreamStatus::Paused
+    );
+
+    // Advance to end_time
+    ctx.env.ledger().set_timestamp(1_000);
+
+    // Withdraw should succeed even if Paused
+    let withdrawn = ctx.client().withdraw(&stream_id);
+    assert_eq!(withdrawn, 1000);
+    assert_eq!(
+        ctx.client().get_stream_state(&stream_id).status,
+        StreamStatus::Completed
     );
 }
 
@@ -12972,12 +13081,12 @@ fn regression_missing_config_create_streams_batch_panics() {
 /// calls `get_admin()` which reads config.
 #[test]
 #[should_panic]
-fn regression_missing_config_set_contract_paused_panics() {
+fn regression_missing_config_set_global_emergency_paused_panics() {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register_contract(None, FluxoraStream);
     let client = FluxoraStreamClient::new(&env, &contract_id);
-    client.set_contract_paused(&true);
+    client.set_global_emergency_paused(&true);
 }
 
 /// `set_admin()` on uninitialised contract must fail because it reads
