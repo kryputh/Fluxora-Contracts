@@ -343,10 +343,9 @@ fn is_global_emergency_paused(env: &Env) -> bool {
 /// Panics when [`is_global_emergency_paused`] is true. Admin/admin-override entrypoints
 /// must not call this so operators can still intervene.
 fn require_not_globally_paused(env: &Env) {
-    assert!(
-        !is_global_emergency_paused(env),
-        "contract is globally paused"
-    );
+    if is_global_emergency_paused(env) {
+        panic_with_error!(env, ContractError::ContractPaused);
+    }
 }
 
 fn read_stream_count(env: &Env) -> u64 {

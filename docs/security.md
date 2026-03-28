@@ -15,6 +15,7 @@ State updates are performed **before** any external token transfers in all funct
   Completion is only allowed from `Active` status; cancelled streams remain `Cancelled` even when their accrued portion is fully withdrawn.
 
 After all checks (auth, status, withdrawable amount), the contract:
+
 1. Updates `withdrawn_amount` in the stream struct.
 2. Conditionally sets `status` to `Completed` if the stream is now fully drained.
 3. Calls `save_stream` to persist the new state.
@@ -23,6 +24,7 @@ After all checks (auth, status, withdrawable amount), the contract:
 ### `cancel_stream` and `cancel_stream_as_admin`
 
 After checks and computing the refund amount, the contract:
+
 1. Sets `stream.status = Cancelled` and records `cancelled_at`.
 2. Calls `save_stream` to persist the updated state.
 3. **Only then** transfers the unstreamed refund to the sender.
@@ -40,12 +42,13 @@ where `accrued_at(cancelled_at)` is frozen for all future reads after cancellati
 ### `top_up_stream`
 
 After authorization and amount validation, the contract:
+
 1. Increases `stream.deposit_amount` with overflow protection.
 2. Calls `save_stream` to persist the new deposit amount.
 3. **Only then** calls the token contract to pull the top-up amount from the funder (`pull_token`).
 
 > **Audit note (resolved):** Prior to the fix in this change, `top_up_stream` pulled
-> tokens from the funder *before* persisting the updated `deposit_amount`. This violated
+> tokens from the funder _before_ persisting the updated `deposit_amount`. This violated
 > CEI ordering: if the token contract had re-entered the stream contract between the
 > external transfer and the `save_stream` call, it could have observed a stale
 > `deposit_amount`. The call order has been corrected so state is always persisted first.
@@ -88,6 +91,7 @@ to the `destination` address.
 
 The contract interacts with exactly one token, fixed at `init` time and stored in
 `Config.token`. This token is assumed to be a well-behaved SEP-41 / SAC token that:
+
 - Does not re-enter the stream contract on `transfer`.
 - Does not silently fail (panics or returns an error on insufficient balance).
 
@@ -100,26 +104,26 @@ reentrancy impact — state will already reflect the current operation when the 
 
 ## Authorization paths
 
-| Operation              | Authorized callers                          |
-|------------------------|---------------------------------------------|
-| `create_stream`        | Sender (the address supplied as `sender`)   |
-| `create_streams`       | Sender (once for the whole batch)           |
-| `pause_stream`         | Stream's `sender`                           |
-| `pause_stream_as_admin`| Contract admin                              |
-| `resume_stream`        | Stream's `sender`                           |
-| `resume_stream_as_admin`| Contract admin                             |
-| `cancel_stream`        | Stream's `sender`                           |
-| `cancel_stream_as_admin`| Contract admin                             |
-| `withdraw`             | Stream's `recipient`                        |
-| `withdraw_to`          | Stream's `recipient`                        |
-| `batch_withdraw`       | Caller supplied as `recipient` (once for batch) |
-| `update_rate_per_second`| Stream's `sender`                          |
-| `shorten_stream_end_time`| Stream's `sender`                         |
-| `extend_stream_end_time`| Stream's `sender`                          |
-| `top_up_stream`        | `funder` (any address; no sender relationship required) |
-| `close_completed_stream`| Permissionless (any caller)               |
-| `set_admin`            | Current contract admin                      |
-| `set_contract_paused`  | Contract admin                              |
+| Operation                 | Authorized callers                                      |
+| ------------------------- | ------------------------------------------------------- |
+| `create_stream`           | Sender (the address supplied as `sender`)               |
+| `create_streams`          | Sender (once for the whole batch)                       |
+| `pause_stream`            | Stream's `sender`                                       |
+| `pause_stream_as_admin`   | Contract admin                                          |
+| `resume_stream`           | Stream's `sender`                                       |
+| `resume_stream_as_admin`  | Contract admin                                          |
+| `cancel_stream`           | Stream's `sender`                                       |
+| `cancel_stream_as_admin`  | Contract admin                                          |
+| `withdraw`                | Stream's `recipient`                                    |
+| `withdraw_to`             | Stream's `recipient`                                    |
+| `batch_withdraw`          | Caller supplied as `recipient` (once for batch)         |
+| `update_rate_per_second`  | Stream's `sender`                                       |
+| `shorten_stream_end_time` | Stream's `sender`                                       |
+| `extend_stream_end_time`  | Stream's `sender`                                       |
+| `top_up_stream`           | `funder` (any address; no sender relationship required) |
+| `close_completed_stream`  | Permissionless (any caller)                             |
+| `set_admin`               | Current contract admin                                  |
+| `set_contract_paused`     | Contract admin                                          |
 
 Cancellation-specific boundary checks:
 
@@ -166,7 +170,7 @@ This ordering ensures that if a downstream token contract or hook re-enters the 
 
 ## Arithmetic Safety
 
-The contract employs exhaustive arithmetic safety checks across all fund-related operations. 
+The contract employs exhaustive arithmetic safety checks across all fund-related operations.
 
 - **Checked Math**: All additions and multiplications involving `deposit_amount`, `rate_per_second`, or stream durations use `checked_*` methods to prevent overflows.
 - **Structured Error Signals**: Arithmetic failures (such as a batch deposit exceeding `i128::MAX`) no longer trigger generic string-based panics. Instead, they emit a formal `ContractError::ArithmeticOverflow` (code 6). This provides crisp, programmable failure semantics for indexers, wallets, and treasury tooling.
