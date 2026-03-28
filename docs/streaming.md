@@ -303,6 +303,26 @@ deposit_amount >= rate_per_second * (new_end_time - start_time)
 
 If the existing deposit does not cover the extended duration, `extend_stream_end_time` panics with `"deposit_amount must cover total streamable amount for extended schedule"` and no state changes occur. Use `top_up_stream` first to increase the deposit, then extend.
 
+### Shorten `end_time` Semantics
+
+`shorten_stream_end_time(stream_id, new_end_time)` is sender-only and only valid for `Active`/`Paused` streams.
+
+Validation boundaries:
+- `new_end_time > now`
+- `new_end_time > start_time`
+- `new_end_time >= cliff_time`
+- `new_end_time < old_end_time`
+
+On success:
+- `new_deposit_amount = rate_per_second * (new_end_time - start_time)`
+- `refund_amount = old_deposit_amount - new_deposit_amount`
+- Contract persists `end_time` and `deposit_amount`, then transfers `refund_amount` to sender, then emits `end_shrt`.
+
+On failure (`InvalidParams` or `InvalidState`):
+- No state change
+- No token transfer
+- No `end_shrt` event
+
 ### Start Time Boundary (Creation)
 
 - `start_time` **must be >= current ledger timestamp** at creation time.

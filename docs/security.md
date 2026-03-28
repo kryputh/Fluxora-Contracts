@@ -52,9 +52,30 @@ After authorization and amount validation, the contract:
 
 ### `shorten_stream_end_time`
 
+Authorization and state gate:
+- Caller must be the stream `sender`.
+- Stream must be `Active` or `Paused` (terminal states return `InvalidState`).
+
+Parameter/time gate (`InvalidParams` on failure):
+- `new_end_time > now` (strictly future; equality is rejected).
+- `new_end_time > start_time`.
+- `new_end_time >= cliff_time`.
+- `new_end_time < old_end_time` (strictly shorter; equal/later values are rejected).
+
+Success path (CEI order):
 1. Updates `stream.end_time` and `stream.deposit_amount`.
 2. Calls `save_stream`.
 3. **Only then** transfers the refund to the sender.
+4. Emits `end_shrt(stream_id)` with `StreamEndShortened { old_end_time, new_end_time, refund_amount }`.
+
+Failure path:
+- No state changes.
+- No token transfer.
+- No `end_shrt` event.
+
+Refund invariant:
+- `refund_amount = old_deposit_amount - rate_per_second × (new_end_time - start_time)`
+- On success, sender balance increases by `refund_amount` and contract token balance decreases by `refund_amount`.
 
 ### `withdraw_to`
 

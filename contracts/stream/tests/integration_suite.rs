@@ -1918,6 +1918,118 @@ fn integration_create_streams_batch_overflow_protection() {
     assert_eq!(ctx.token.balance(&ctx.sender), 10_000);
     assert_eq!(ctx.token.balance(&ctx.contract_id), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Integration tests — shorten_stream_end_time: refund correctness + invariants
+// ---------------------------------------------------------------------------
+
+/// Success path: shortening updates schedule, refunds exact unstreamed amount, emits event.
+#[test]
+fn integration_shorten_end_time_refund_and_event_observable() {
+    let ctx = TestContext::setup();
+    let stream_id = ctx.create_default_stream(); // 1000 deposit, rate=1, end=1000
+
+    let sender_before = ctx.token.balance(&ctx.sender);
+    let contract_before = ctx.token.balance(&ctx.contract_id);
+
+    ctx.client().shorten_stream_end_time(&stream_id, &700u64);
+
+    let sender_after = ctx.token.balance(&ctx.sender);
+    let contract_after = ctx.token.balance(&ctx.contract_id);
+    assert_eq!(sender_after - sender_before, 300);
+    assert_eq!(contract_before - contract_after, 300);
+
+    let state = ctx.client().get_stream_state(&stream_id);
+    assert_eq!(state.end_time, 700);
+    assert_eq!(state.deposit_amount, 700);
+
+    let events = ctx.env.events().all();
+    let last = events.last().unwrap();
+    let payload = StreamEndShortened::from_val(&ctx.env, &last.2);
+    assert_eq!(payload.stream_id, stream_id);
+    assert_eq!(payload.old_end_time, 1000);
+    assert_eq!(payload.new_end_time, 700);
+    assert_eq!(payload.refund_amount, 300);
+}
+
+/// Failure path: non-shortening values (equal/later end) are InvalidParams and leave no side effects.
+#[test]
+fn integration_shorten_end_time_rejects_equal_or_later_and_is_atomic() {
+    let ctx = TestContext::setup();
+    ctx.env.ledger().set_timestamp(0);
+
+    // Extra deposit ensures a "later" value would otherwise be feasible,
+    // proving rejection is based on shorten semantics, not insufficiency.
+    let stream_id = ctx.client().create_stream(
+        &ctx.sender,
+        &ctx.recipient,
+        &2_000_i128,
+        &1_i128,
+        &0u64,
+        &0u64,
+        &1_000u64,
+    );
+
+    let sender_before = ctx.token.balance(&ctx.sender);
+    let contract_before = ctx.token.balance(&ctx.contract_id);
+    let state_before = ctx.client().get_stream_state(&stream_id);
+    let events_before = ctx.env.events().all().len();
+
+    let same = ctx
+        .client()
+        .try_shorten_stream_end_time(&stream_id, &1_000u64);
+    assert_eq!(same, Err(Ok(ContractError::InvalidParams)));
+
+    let later = ctx
+        .client()
+        .try_shorten_stream_end_time(&stream_id, &1_500u64);
+    assert_eq!(later, Err(Ok(ContractError::InvalidParams)));
+
+    assert_eq!(ctx.token.balance(&ctx.sender), sender_before);
+    assert_eq!(ctx.token.balance(&ctx.contract_id), contract_before);
+    assert_eq!(ctx.env.events().all().len(), events_before);
+
+    let state_after = ctx.client().get_stream_state(&stream_id);
+    assert_eq!(state_after.end_time, state_before.end_time);
+    assert_eq!(state_after.deposit_amount, state_before.deposit_amount);
+    assert_eq!(state_after.status, state_before.status);
+}
+
+/// Time boundary: `new_end_time == now` is invalid (must be strictly future).
+#[test]
+fn integration_shorten_end_time_rejects_now_boundary() {
+    let ctx = TestContext::setup();
+    let stream_id = ctx.create_default_stream();
+
+    ctx.env.ledger().set_timestamp(500);
+    let result = ctx
+        .client()
+        .try_shorten_stream_end_time(&stream_id, &500u64);
+    assert_eq!(result, Err(Ok(ContractError::InvalidParams)));
+}
+
+/// Role/state boundaries: sender-only auth and terminal states rejected.
+#[test]
+fn integration_shorten_end_time_terminal_states_rejected() {
+    let ctx = TestContext::setup();
+
+    let completed_id = ctx.create_default_stream();
+    ctx.env.ledger().set_timestamp(1000);
+    ctx.client().withdraw(&completed_id);
+    let completed = ctx
+        .client()
+        .try_shorten_stream_end_time(&completed_id, &900u64);
+    assert_eq!(completed, Err(Ok(ContractError::InvalidState)));
+
+    let cancelled_id = ctx.create_default_stream();
+    ctx.env.ledger().set_timestamp(300);
+    ctx.client().cancel_stream(&cancelled_id);
+    let cancelled = ctx
+        .client()
+        .try_shorten_stream_end_time(&cancelled_id, &800u64);
+    assert_eq!(cancelled, Err(Ok(ContractError::InvalidState)));
+}
+
 // ---------------------------------------------------------------------------
 // Integration tests — extend_stream_end_time: deposit sufficiency
 // ---------------------------------------------------------------------------
