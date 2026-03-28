@@ -8,8 +8,8 @@ use soroban_sdk::{
 };
 
 use crate::{
-    ContractError, CreateStreamParams, FluxoraStream, FluxoraStreamClient, StreamCreated,
-    StreamEvent, StreamStatus, WithdrawalTo,
+    ContractError, ContractPauseChanged, CreateStreamParams, FluxoraStream, FluxoraStreamClient,
+    GlobalEmergencyPauseChanged, StreamCreated, StreamEvent, StreamStatus, WithdrawalTo,
 };
 
 // ---------------------------------------------------------------------------
@@ -4229,6 +4229,240 @@ fn test_completed_event() {
     assert_eq!(
         Option::<StreamEvent>::from_val(&ctx.env, &last_event.2).unwrap(),
         StreamEvent::StreamCompleted(stream_id)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests — Admin event parity
+//
+// Admin override operations (`*_as_admin`) must emit the **same** topic and
+// payload as their sender counterparts. Indexers and integrators key off
+// event topics to index state changes; a divergence between sender and admin
+// paths would create silent gaps in downstream observability.
+//
+// Scope: pause, resume, cancel, set_contract_paused, set_global_emergency_paused.
+// ---------------------------------------------------------------------------
+
+/// `pause_stream_as_admin` must emit topic ("paused", stream_id) with
+/// `StreamEvent::Paused(stream_id)` — identical to `pause_stream`.
+#[test]
+fn test_admin_pause_emits_same_event_as_sender_pause() {
+    let ctx = TestContext::setup();
+    let stream_id = ctx.create_default_stream();
+
+    ctx.client().pause_stream_as_admin(&stream_id);
+
+    let events = ctx.env.events().all();
+    let last_event = events.last().unwrap();
+
+    // Topic[0] must be the symbol "paused"
+    assert_eq!(
+        Symbol::from_val(&ctx.env, &last_event.1.get(0).unwrap()),
+        Symbol::new(&ctx.env, "paused"),
+        "pause_stream_as_admin topic[0] must be \"paused\""
+    );
+    // Topic[1] must be the stream_id
+    let topic_id: u64 = last_event.1.get(1).unwrap().into_val(&ctx.env);
+    assert_eq!(
+        topic_id, stream_id,
+        "pause_stream_as_admin topic[1] must be stream_id"
+    );
+    // Data must be StreamEvent::Paused(stream_id)
+    assert_eq!(
+        Option::<StreamEvent>::from_val(&ctx.env, &last_event.2).unwrap(),
+        StreamEvent::Paused(stream_id),
+        "pause_stream_as_admin data must be StreamEvent::Paused(stream_id)"
+    );
+}
+
+/// `resume_stream_as_admin` must emit topic ("resumed", stream_id) with
+/// `StreamEvent::Resumed(stream_id)` — identical to `resume_stream`.
+#[test]
+fn test_admin_resume_emits_same_event_as_sender_resume() {
+    let ctx = TestContext::setup();
+    let stream_id = ctx.create_default_stream();
+
+    ctx.client().pause_stream(&stream_id);
+    ctx.client().resume_stream_as_admin(&stream_id);
+
+    let events = ctx.env.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(
+        Symbol::from_val(&ctx.env, &last_event.1.get(0).unwrap()),
+        Symbol::new(&ctx.env, "resumed"),
+        "resume_stream_as_admin topic[0] must be \"resumed\""
+    );
+    let topic_id: u64 = last_event.1.get(1).unwrap().into_val(&ctx.env);
+    assert_eq!(
+        topic_id, stream_id,
+        "resume_stream_as_admin topic[1] must be stream_id"
+    );
+    assert_eq!(
+        Option::<StreamEvent>::from_val(&ctx.env, &last_event.2).unwrap(),
+        StreamEvent::Resumed(stream_id),
+        "resume_stream_as_admin data must be StreamEvent::Resumed(stream_id)"
+    );
+}
+
+/// `cancel_stream_as_admin` must emit topic ("cancelled", stream_id) with
+/// `StreamEvent::StreamCancelled(stream_id)` — identical to `cancel_stream`.
+#[test]
+fn test_admin_cancel_emits_same_event_as_sender_cancel() {
+    let ctx = TestContext::setup();
+    let stream_id = ctx.create_default_stream();
+    ctx.env.ledger().set_timestamp(300);
+
+    ctx.client().cancel_stream_as_admin(&stream_id);
+
+    let events = ctx.env.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(
+        Symbol::from_val(&ctx.env, &last_event.1.get(0).unwrap()),
+        Symbol::new(&ctx.env, "cancelled"),
+        "cancel_stream_as_admin topic[0] must be \"cancelled\""
+    );
+    let topic_id: u64 = last_event.1.get(1).unwrap().into_val(&ctx.env);
+    assert_eq!(
+        topic_id, stream_id,
+        "cancel_stream_as_admin topic[1] must be stream_id"
+    );
+    assert_eq!(
+        Option::<StreamEvent>::from_val(&ctx.env, &last_event.2).unwrap(),
+        StreamEvent::StreamCancelled(stream_id),
+        "cancel_stream_as_admin data must be StreamEvent::StreamCancelled(stream_id)"
+    );
+}
+
+/// `set_contract_paused` must emit topic ("ct_pause",) with `ContractPauseChanged`
+/// payload for both the pause and unpause transitions.
+#[test]
+fn test_set_contract_paused_emits_ct_pause_event() {
+    let ctx = TestContext::setup();
+
+    // Pause: paused = true
+    ctx.client().set_contract_paused(&true);
+    let events = ctx.env.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(
+        Symbol::from_val(&ctx.env, &last_event.1.get(0).unwrap()),
+        Symbol::new(&ctx.env, "ct_pause"),
+        "set_contract_paused topic[0] must be \"ct_pause\""
+    );
+    let payload = ContractPauseChanged::try_from_val(&ctx.env, &last_event.2)
+        .expect("ct_pause data must be ContractPauseChanged");
+    assert!(
+        payload.paused,
+        "ContractPauseChanged.paused must be true on pause"
+    );
+
+    // Unpause: paused = false
+    ctx.client().set_contract_paused(&false);
+    let events = ctx.env.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(
+        Symbol::from_val(&ctx.env, &last_event.1.get(0).unwrap()),
+        Symbol::new(&ctx.env, "ct_pause"),
+        "set_contract_paused topic[0] must be \"ct_pause\" on unpause"
+    );
+    let payload = ContractPauseChanged::try_from_val(&ctx.env, &last_event.2)
+        .expect("ct_pause data must be ContractPauseChanged on unpause");
+    assert!(
+        !payload.paused,
+        "ContractPauseChanged.paused must be false on unpause"
+    );
+}
+
+/// `set_global_emergency_paused` must emit topic ("gl_pause",) with
+/// `GlobalEmergencyPauseChanged` payload for both transitions.
+#[test]
+fn test_set_global_emergency_paused_emits_gl_pause_event() {
+    let ctx = TestContext::setup();
+
+    // Emergency pause: paused = true
+    ctx.client().set_global_emergency_paused(&true);
+    let events = ctx.env.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(
+        Symbol::from_val(&ctx.env, &last_event.1.get(0).unwrap()),
+        Symbol::new(&ctx.env, "gl_pause"),
+        "set_global_emergency_paused topic[0] must be \"gl_pause\""
+    );
+    let payload = GlobalEmergencyPauseChanged::try_from_val(&ctx.env, &last_event.2)
+        .expect("gl_pause data must be GlobalEmergencyPauseChanged");
+    assert!(
+        payload.paused,
+        "GlobalEmergencyPauseChanged.paused must be true on pause"
+    );
+
+    // Clear emergency pause
+    ctx.client().set_global_emergency_paused(&false);
+    let events = ctx.env.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(
+        Symbol::from_val(&ctx.env, &last_event.1.get(0).unwrap()),
+        Symbol::new(&ctx.env, "gl_pause"),
+        "set_global_emergency_paused topic[0] must be \"gl_pause\" on clear"
+    );
+    let payload = GlobalEmergencyPauseChanged::try_from_val(&ctx.env, &last_event.2)
+        .expect("gl_pause data must be GlobalEmergencyPauseChanged on clear");
+    assert!(
+        !payload.paused,
+        "GlobalEmergencyPauseChanged.paused must be false on clear"
+    );
+}
+
+/// When set_global_emergency_paused is true, user mutations (withdraw, cancel) are
+/// blocked but admin overrides still work and still emit the correct event.
+#[test]
+fn test_admin_ops_emit_events_during_global_emergency_pause() {
+    let ctx = TestContext::setup();
+    let stream_id = ctx.create_default_stream();
+
+    // Engage global emergency pause
+    ctx.client().set_global_emergency_paused(&true);
+    assert!(ctx.client().get_global_emergency_paused());
+
+    // User withdraw is blocked
+    let result = ctx.client().try_withdraw(&stream_id);
+    assert!(
+        result.is_err(),
+        "withdraw must be blocked during global emergency pause"
+    );
+
+    // Admin pause still works and emits the correct event
+    ctx.client().pause_stream_as_admin(&stream_id);
+    let events = ctx.env.events().all();
+    let last_event = events.last().unwrap();
+    assert_eq!(
+        Option::<StreamEvent>::from_val(&ctx.env, &last_event.2).unwrap(),
+        StreamEvent::Paused(stream_id),
+        "pause_stream_as_admin must emit Paused during global emergency pause"
+    );
+
+    // Admin resume still works and emits the correct event
+    ctx.client().resume_stream_as_admin(&stream_id);
+    let events = ctx.env.events().all();
+    let last_event = events.last().unwrap();
+    assert_eq!(
+        Option::<StreamEvent>::from_val(&ctx.env, &last_event.2).unwrap(),
+        StreamEvent::Resumed(stream_id),
+        "resume_stream_as_admin must emit Resumed during global emergency pause"
+    );
+
+    // Admin cancel still works and emits the correct event
+    ctx.client().cancel_stream_as_admin(&stream_id);
+    let events = ctx.env.events().all();
+    let last_event = events.last().unwrap();
+    assert_eq!(
+        Option::<StreamEvent>::from_val(&ctx.env, &last_event.2).unwrap(),
+        StreamEvent::StreamCancelled(stream_id),
+        "cancel_stream_as_admin must emit StreamCancelled during global emergency pause"
     );
 }
 

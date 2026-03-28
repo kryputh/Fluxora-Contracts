@@ -216,6 +216,16 @@ pub struct GlobalEmergencyPauseChanged {
     pub paused: bool,
 }
 
+/// Emitted when the contract admin toggles the creation-pause flag via `set_contract_paused`.
+///
+/// When `paused == true`, `create_stream` and `create_streams` revert with
+/// `ContractError::ContractPaused`. All other operations are unaffected.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ContractPauseChanged {
+    pub paused: bool,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Stream {
